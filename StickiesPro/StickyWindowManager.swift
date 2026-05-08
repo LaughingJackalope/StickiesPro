@@ -16,15 +16,24 @@ class StickyWindowManager: ObservableObject {
     static let shared = StickyWindowManager()
     
     @Published var stickies: [StickyWindow] = []
+    @Published private(set) var notespaces: [Vault] = []
+    @Published private(set) var activeNotespaceID: UUID?
     
     private(set) var modelContext: ModelContext?
     private var saveTask: Task<Void, Never>?
     private var pendingAnalyticsNoteIDs = Set<UUID>()
+    private let activeNotespaceDefaultsKey = "activeNotespaceID"
     
     private init() {}
     
+    var activeNotespace: Vault? {
+        guard let activeNotespaceID else { return notespaces.first }
+        return notespaces.first { $0.id == activeNotespaceID } ?? notespaces.first
+    }
+    
     func configure(modelContext: ModelContext) {
         self.modelContext = modelContext
+        prepareNotespaces()
         loadPersistedStickies()
     }
     
@@ -40,7 +49,8 @@ class StickyWindowManager: ObservableObject {
             content: content,
             color: StickyColorCodec.hex(from: resolvedColor),
             positionX: resolvedPosition.x,
-            positionY: resolvedPosition.y
+            positionY: resolvedPosition.y,
+            vault: activeNotespace
         )
         
         modelContext?.insert(stickyModel)
@@ -63,6 +73,33 @@ class StickyWindowManager: ObservableObject {
     
     func setColor(_ color: Color) {
         keySticky?.setColor(color)
+    }
+    
+    func createNotespace(named name: String) {
+        guard let modelContext else { return }
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else { return }
+        
+        if let existingNotespace = notespaces.first(where: { $0.displayName.localizedCaseInsensitiveCompare(trimmedName) == .orderedSame }) {
+            switchNotespace(to: existingNotespace)
+            return
+        }
+        
+        let notespace = Vault(displayName: trimmedName, type: VaultType.notespace)
+        modelContext.insert(notespace)
+        saveImmediately()
+        reloadNotespaces()
+        switchNotespace(to: notespace)
+    }
+    
+    func switchNotespace(to notespace: Vault) {
+        guard activeNotespaceID != notespace.id else { return }
+        
+        flushPendingSave()
+        closeVisibleStickies()
+        activeNotespaceID = notespace.id
+        UserDefaults.standard.set(notespace.id.uuidString, forKey: activeNotespaceDefaultsKey)
+        loadPersistedStickies()
     }
     
     func scheduleSave(contentChangedNoteID: UUID? = nil) {
@@ -106,12 +143,71 @@ class StickyWindowManager: ObservableObject {
         }
     }
     
+    private func prepareNotespaces() {
+        guard let modelContext else { return }
+        reloadNotespaces()
+        
+        let defaultNotespace: Vault
+        if let existingDefault = notespaces.first {
+            defaultNotespace = existingDefault
+        } else {
+            defaultNotespace = Vault(displayName: "Default", type: VaultType.notespace)
+            modelContext.insert(defaultNotespace)
+            saveImmediately()
+            reloadNotespaces()
+        }
+        
+        moveUnassignedStickies(to: defaultNotespace)
+        restoreActiveNotespace(defaultNotespace: defaultNotespace)
+    }
+    
+    private func reloadNotespaces() {
+        guard let modelContext else { return }
+        
+        do {
+            let descriptor = FetchDescriptor<Vault>(sortBy: [SortDescriptor(\.displayName)])
+            notespaces = try modelContext.fetch(descriptor)
+                .filter { $0.type == VaultType.notespace }
+        } catch {
+            assertionFailure("Failed to load notespaces: \(error)")
+        }
+    }
+    
+    private func restoreActiveNotespace(defaultNotespace: Vault) {
+        let persistedID = UserDefaults.standard.string(forKey: activeNotespaceDefaultsKey).flatMap(UUID.init(uuidString:))
+        let restoredNotespace = persistedID.flatMap { id in
+            notespaces.first { $0.id == id }
+        }
+        let activeNotespace = restoredNotespace ?? defaultNotespace
+        
+        activeNotespaceID = activeNotespace.id
+        UserDefaults.standard.set(activeNotespace.id.uuidString, forKey: activeNotespaceDefaultsKey)
+    }
+    
+    private func moveUnassignedStickies(to notespace: Vault) {
+        guard let modelContext else { return }
+        
+        do {
+            let descriptor = FetchDescriptor<Sticky>()
+            let unassignedStickies = try modelContext.fetch(descriptor).filter { $0.vault == nil }
+            guard !unassignedStickies.isEmpty else { return }
+            
+            for sticky in unassignedStickies {
+                sticky.vault = notespace
+            }
+            saveImmediately()
+        } catch {
+            assertionFailure("Failed to migrate unassigned stickies: \(error)")
+        }
+    }
+    
     private func loadPersistedStickies() {
         guard let modelContext else { return }
         
         do {
             let descriptor = FetchDescriptor<Sticky>(sortBy: [SortDescriptor(\.createdAt)])
             let persistedStickies = try modelContext.fetch(descriptor)
+                .filter { $0.vault?.id == activeNotespaceID }
             if persistedStickies.isEmpty {
                 createWelcomeSticky()
             } else {
@@ -120,6 +216,13 @@ class StickyWindowManager: ObservableObject {
         } catch {
             assertionFailure("Failed to load persisted stickies: \(error)")
         }
+    }
+    
+    private func closeVisibleStickies() {
+        for sticky in stickies {
+            sticky.close()
+        }
+        stickies.removeAll()
     }
     
     private func openWindow(for stickyModel: Sticky) {
@@ -215,7 +318,6 @@ class StickyWindow: NSObject, ObservableObject, Identifiable, NSWindowDelegate {
     }
     
     func show() {
-        // Create the SwiftUI view with a proper binding
         let stickyView = StickyNoteView(
             content: Binding(
                 get: { [weak self] in self?.content ?? "" },
@@ -241,10 +343,8 @@ class StickyWindow: NSObject, ObservableObject, Identifiable, NSWindowDelegate {
             rootView = AnyView(stickyView)
         }
         
-        // Wrap it in a hosting view
         hostingView = NSHostingView(rootView: rootView)
         
-        // Create the floating panel
         let panel = NSPanel(
             contentRect: NSRect(
                 origin: position,
@@ -255,22 +355,20 @@ class StickyWindow: NSObject, ObservableObject, Identifiable, NSWindowDelegate {
                 .fullSizeContentView,
                 .closable,
                 .resizable,
-                .miniaturizable,
-                .utilityWindow
+                .miniaturizable
             ],
             backing: .buffered,
             defer: false
         )
         
-        // Configure the panel to float like Stickies.app
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.isFloatingPanel = true
+        panel.hidesOnDeactivate = false
         panel.isMovableByWindowBackground = false
         panel.delegate = self
         panel.minSize = NSSize(width: 220, height: 180)
         
-        // Let SwiftUI render the visible title bar content.
         panel.titlebarAppearsTransparent = true
         panel.titleVisibility = .hidden
         panel.backgroundColor = NSColor(color.opacity(0.05))
@@ -280,11 +378,8 @@ class StickyWindow: NSObject, ObservableObject, Identifiable, NSWindowDelegate {
         panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
         panel.standardWindowButton(.zoomButton)?.isHidden = true
         
-        // Set the content view
         panel.contentView = hostingView
         panel.title = displayTitle
-        
-        // Show the panel
         panel.orderFront(nil)
         
         self.panel = panel
@@ -341,4 +436,8 @@ class StickyWindow: NSObject, ObservableObject, Identifiable, NSWindowDelegate {
     private func updateWindowTitle() {
         panel?.title = displayTitle
     }
+}
+
+enum VaultType {
+    static let notespace = "notespace"
 }

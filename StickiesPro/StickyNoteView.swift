@@ -21,12 +21,71 @@ struct StickyNoteView: View {
     @State private var isEditing = false
     @State private var showsDeleteConfirmation = false
     @FocusState private var isFocused: Bool
+    @Namespace private var morphNamespace
+    @AppStorage(StickyTextStyle.fontSizeKey) private var noteFontSize = StickyTextStyle.defaultFontSize
+    @AppStorage(StickyTextStyle.designKey) private var noteFontDesign = StickyTextStyle.defaultDesign
     
     private var title: String {
         StickyNoteTitle.make(from: content)
     }
     
+    private var isExpanded: Bool {
+        !windowShadeController.isShaded
+    }
+    
+    private var surfaceCornerRadius: CGFloat {
+        isExpanded ? 16 : 30
+    }
+    
+    private var noteFont: Font {
+        .system(size: noteFontSize, design: StickyTextStyle.fontDesign(for: noteFontDesign))
+    }
+    
     var body: some View {
+        Group {
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 0) {
+                    expandedToolbar
+                    
+                    Divider()
+                        .opacity(0.3)
+                    
+                    noteBody
+                    
+                    statusBar
+                }
+            } else {
+                collapsedPill
+            }
+        }
+        .matchedGeometryEffect(id: "stickySurface", in: morphNamespace)
+        .background {
+            surfaceBackground
+        }
+        .clipShape(RoundedRectangle(cornerRadius: surfaceCornerRadius, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: surfaceCornerRadius, style: .continuous)
+                .strokeBorder(.white.opacity(isHovered ? 0.42 : 0.25), lineWidth: 1)
+        }
+        .animation(.spring(response: 0.38, dampingFraction: 0.72), value: isExpanded)
+        .onHover { hovering in
+            isHovered = hovering
+        }
+        .onExitCommand {
+            endEditing()
+        }
+        .overlay {
+            keyboardShortcutCommands
+        }
+        .alert("Delete this sticky?", isPresented: $showsDeleteConfirmation) {
+            Button("Delete", role: .destructive, action: onClose)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This note will be permanently removed.")
+        }
+    }
+    
+    private var surfaceBackground: some View {
         ZStack {
             LinearGradient(
                 colors: [
@@ -37,206 +96,204 @@ struct StickyNoteView: View {
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
-            .ignoresSafeArea()
-            .overlay {
-                Rectangle()
-                    .fill(.ultraThinMaterial.opacity(0.72))
-                    .ignoresSafeArea()
-            }
             
-            VStack(alignment: .leading, spacing: 0) {
-                StickyTitleBar(
-                    title: title,
-                    color: color,
-                    isEditing: isEditing,
-                    isHovered: isHovered,
-                    onClose: {
-                        showsDeleteConfirmation = true
-                    },
-                    onNewSticky: onNewSticky,
-                    onToggleEditing: {
-                        isEditing.toggle()
-                        isFocused = isEditing
-                    },
-                    windowShadeController: windowShadeController
-                )
-                
-                if !windowShadeController.isShaded {
-                    ScrollView {
-                        if isEditing {
-                            TextEditor(text: $content)
-                                .font(.system(size: 13))
-                                .scrollContentBackground(.hidden)
-                                .background(Color.clear)
-                                .focused($isFocused)
-                                .frame(maxWidth: .infinity, minHeight: 200, alignment: .leading)
-                        } else {
-                            if let attributedString = try? AttributedString(markdown: content) {
-                                Text(attributedString)
-                                    .font(.system(size: 13))
-                                    .foregroundStyle(.primary)
-                                    .textSelection(.enabled)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                            } else {
-                                Text(content)
-                                    .font(.system(size: 13))
-                                    .foregroundStyle(.primary)
-                                    .textSelection(.enabled)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                            }
-                        }
-                    }
-                    .frame(maxHeight: .infinity)
-                    .padding(.horizontal, 16)
-                    .padding(.top, 12)
-                    
-                    HStack {
-                        Text(title)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                        
-                        Spacer()
-                        
-                        Text("\(content.split(separator: " ").count) words")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .opacity(isHovered ? 1 : 0)
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 12)
-                }
-            }
-        }
-        .background {
-            RoundedRectangle(cornerRadius: 12)
-                .fill(color.opacity(0.22))
-        }
-        .glassEffect(
-            .regular
-                .tint(color.opacity(0.28))
-                .interactive(true),
-            in: .rect(cornerRadius: 12)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(.white.opacity(isHovered ? 0.42 : 0.25), lineWidth: 1)
-        }
-        .onHover { hovering in
-            isHovered = hovering
-        }
-        .alert("Delete this sticky?", isPresented: $showsDeleteConfirmation) {
-            Button("Delete", role: .destructive, action: onClose)
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("This note will be permanently removed.")
+            Rectangle()
+                .fill(.ultraThinMaterial.opacity(0.72))
         }
     }
-}
-
-private struct StickyTitleBar: View {
-    let title: String
-    let color: Color
-    let isEditing: Bool
-    let isHovered: Bool
-    let onClose: () -> Void
-    let onNewSticky: () -> Void
-    let onToggleEditing: () -> Void
-    @ObservedObject var windowShadeController: WindowShadeController
     
-    var body: some View {
+    private var expandedToolbar: some View {
         ZStack {
             WindowTitleBarBridge(windowShadeController: windowShadeController)
             
             HStack(spacing: 8) {
                 Button {
-                    windowShadeController.toggleShade()
+                    collapse()
                 } label: {
-                    Image(systemName: windowShadeController.isShaded ? "chevron.down" : "chevron.up")
-                        .font(.system(size: 8, weight: .bold))
-                        .foregroundStyle(.primary.opacity(0.75))
-                        .frame(width: 16, height: 16)
-                        .background(Circle().fill(.white.opacity(0.35)))
+                    toolbarIcon("chevron.up", size: 8)
                 }
                 .buttonStyle(.plain)
-                .help(windowShadeController.isShaded ? "Expand" : "Collapse")
+                .keyboardShortcut("m", modifiers: .command)
+                .help("Collapse")
                 
                 Button {
                     windowShadeController.zoom()
                 } label: {
-                    Image(systemName: "arrow.up.left.and.arrow.down.right")
-                        .font(.system(size: 8, weight: .bold))
-                        .foregroundStyle(.primary.opacity(0.75))
-                        .frame(width: 16, height: 16)
-                        .background(Circle().fill(.white.opacity(0.35)))
+                    toolbarIcon("arrow.up.left.and.arrow.down.right", size: 8)
                 }
                 .buttonStyle(.plain)
-                .disabled(windowShadeController.isShaded)
                 .help("Zoom")
-                
-                if windowShadeController.isShaded {
-                    Text(title)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                }
                 
                 Spacer()
                 
                 Button(action: onNewSticky) {
-                    Image(systemName: "plus")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(.primary.opacity(0.75))
-                        .frame(width: 16, height: 16)
-                        .background(Circle().fill(.white.opacity(0.35)))
+                    toolbarIcon("plus", size: 9)
                 }
                 .buttonStyle(.plain)
                 .help("New Sticky")
                 
-                Button(action: onToggleEditing) {
-                    Image(systemName: isEditing ? "eye.fill" : "pencil")
-                        .foregroundStyle(.secondary)
-                        .font(.system(size: 11))
-                        .padding(6)
-                        .background {
-                            Circle()
-                                .fill(color.opacity(0.2))
-                        }
+                Button(action: toggleEditing) {
+                    toolbarIcon(isEditing ? "eye" : "info.circle", size: 11)
                 }
                 .buttonStyle(.plain)
-                .opacity(windowShadeController.isShaded ? 0 : (isHovered ? 1 : 0.65))
-                .disabled(windowShadeController.isShaded)
+                .opacity(isHovered ? 1 : 0.65)
                 .help(isEditing ? "Preview" : "Edit")
                 
-                Button(action: onClose) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(.primary.opacity(0.75))
-                        .frame(width: 16, height: 16)
-                        .background(Circle().fill(.white.opacity(0.35)))
+                Button {
+                    showsDeleteConfirmation = true
+                } label: {
+                    toolbarIcon("xmark", size: 9)
                 }
                 .buttonStyle(.plain)
+                .keyboardShortcut("w", modifiers: .command)
                 .help("Delete")
             }
             .padding(.horizontal, 12)
         }
         .frame(height: windowShadeController.titleBarHeight)
-        .background {
-            LinearGradient(
-                colors: [
-                    .white.opacity(0.18),
-                    color.opacity(0.22)
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
+    }
+    
+    private var collapsedPill: some View {
+        ZStack {
+            WindowTitleBarBridge(windowShadeController: windowShadeController)
+            
+            HStack(spacing: 8) {
+                Button {
+                    expand()
+                } label: {
+                    toolbarIcon("chevron.down", size: 8)
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut("m", modifiers: [.command, .shift])
+                .help("Expand")
+                
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                
+                Spacer()
+                
+                Button(action: onNewSticky) {
+                    toolbarIcon("plus", size: 9)
+                }
+                .buttonStyle(.plain)
+                .help("New Sticky")
+                
+                Button {
+                    showsDeleteConfirmation = true
+                } label: {
+                    toolbarIcon("xmark", size: 9)
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut("w", modifiers: .command)
+                .help("Delete")
+            }
+            .padding(.horizontal, 12)
         }
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(.white.opacity(0.2))
-                .frame(height: 1)
+        .frame(height: windowShadeController.titleBarHeight)
+    }
+    
+    private var noteBody: some View {
+        ScrollView {
+            if isEditing {
+                TextEditor(text: $content)
+                    .font(noteFont)
+                    .scrollContentBackground(.hidden)
+                    .background(Color.clear)
+                    .focused($isFocused)
+                    .frame(maxWidth: .infinity, minHeight: 200, alignment: .leading)
+            } else if let attributedString = try? AttributedString(markdown: content) {
+                Text(attributedString)
+                    .font(noteFont)
+                    .foregroundStyle(.primary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                Text(content)
+                    .font(noteFont)
+                    .foregroundStyle(.primary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
+        .frame(maxHeight: .infinity)
+        .padding(.horizontal, 16)
+        .padding(.top, 12)
+    }
+    
+    private var statusBar: some View {
+        HStack {
+            Text(title)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            
+            Spacer()
+            
+            Text("\(content.split(separator: " ").count) words")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .opacity(isHovered ? 1 : 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 12)
+    }
+    
+    private var keyboardShortcutCommands: some View {
+        Group {
+            Button(action: beginEditing) {
+                EmptyView()
+            }
+            .keyboardShortcut(.return, modifiers: .command)
+            
+            Button(action: endEditing) {
+                EmptyView()
+            }
+            .keyboardShortcut(.cancelAction)
+        }
+        .frame(width: 0, height: 0)
+        .opacity(0)
+        .accessibilityHidden(true)
+    }
+    
+    private func toolbarIcon(_ systemName: String, size: CGFloat) -> some View {
+        Image(systemName: systemName)
+            .font(.system(size: size, weight: .bold))
+            .foregroundStyle(.primary.opacity(0.75))
+            .frame(width: 18, height: 18)
+            .background(Circle().fill(.white.opacity(0.28)))
+    }
+    
+    private func toggleEditing() {
+        isEditing.toggle()
+        isFocused = isEditing
+    }
+    
+    private func beginEditing() {
+        if !isExpanded {
+            expand()
+        }
+        
+        isEditing = true
+        
+        DispatchQueue.main.async {
+            isFocused = true
+        }
+    }
+    
+    private func endEditing() {
+        isFocused = false
+        isEditing = false
+    }
+    
+    private func collapse() {
+        windowShadeController.collapse()
+    }
+    
+    private func expand() {
+        windowShadeController.expand()
     }
 }
 
@@ -251,6 +308,8 @@ private final class WindowShadeController: ObservableObject {
     private var expandedMinSize: NSSize?
     private var expandedMaxSize: NSSize?
     private var expandedStyleMask: NSWindow.StyleMask?
+    private let shadeAnimation = Animation.spring(response: 0.38, dampingFraction: 0.72)
+    private var windowMutationGeneration = 0
     
     func attach(to window: NSWindow?) {
         self.window = window
@@ -260,18 +319,31 @@ private final class WindowShadeController: ObservableObject {
     }
     
     func toggleShade() {
-        guard let window else { return }
-        
         if isShaded {
-            restore(window: window)
+            expand()
         } else {
-            shade(window: window)
+            collapse()
         }
+    }
+    
+    func collapse() {
+        guard let window, !isShaded else { return }
+        
+        shade(window: window)
+    }
+    
+    func expand() {
+        guard let window, isShaded else { return }
+        
+        restore(window: window)
     }
     
     func zoom() {
         guard let window, !isShaded else { return }
-        window.performZoom(nil)
+        
+        scheduleWindowMutation { [weak window] in
+            window?.performZoom(nil)
+        }
     }
     
     private func shade(window: NSWindow) {
@@ -290,31 +362,57 @@ private final class WindowShadeController: ObservableObject {
         shadedFrame.origin.y += deltaHeight
         shadedFrame.size.height = targetHeight
         
-        isShaded = true
-        window.minSize = NSSize(width: 180, height: targetHeight)
-        window.maxSize = NSSize(width: .greatestFiniteMagnitude, height: targetHeight)
-        window.styleMask.remove(.resizable)
-        window.animator().setFrame(shadedFrame, display: true)
+        withAnimation(shadeAnimation) {
+            isShaded = true
+        }
+        
+        scheduleWindowMutation { [weak window] in
+            guard let window else { return }
+            window.minSize = NSSize(width: 180, height: targetHeight)
+            window.maxSize = NSSize(width: .greatestFiniteMagnitude, height: targetHeight)
+            window.styleMask.remove(.resizable)
+            window.animator().setFrame(shadedFrame, display: true)
+        }
     }
     
     private func restore(window: NSWindow) {
         guard let expandedFrame else { return }
         
-        isShaded = false
-        
-        if let expandedMinSize {
-            window.minSize = expandedMinSize
+        withAnimation(shadeAnimation) {
+            isShaded = false
         }
         
-        if let expandedMaxSize {
-            window.maxSize = expandedMaxSize
-        }
+        let expandedMinSize = expandedMinSize
+        let expandedMaxSize = expandedMaxSize
+        let expandedStyleMask = expandedStyleMask
         
-        if let expandedStyleMask {
-            window.styleMask = expandedStyleMask
+        scheduleWindowMutation { [weak window] in
+            guard let window else { return }
+            
+            if let expandedMinSize {
+                window.minSize = expandedMinSize
+            }
+            
+            if let expandedMaxSize {
+                window.maxSize = expandedMaxSize
+            }
+            
+            if let expandedStyleMask {
+                window.styleMask = expandedStyleMask
+            }
+            
+            window.animator().setFrame(expandedFrame, display: true)
         }
+    }
+    
+    private func scheduleWindowMutation(_ mutation: @escaping @MainActor () -> Void) {
+        windowMutationGeneration += 1
+        let generation = windowMutationGeneration
         
-        window.animator().setFrame(expandedFrame, display: true)
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.windowMutationGeneration == generation else { return }
+            mutation()
+        }
     }
 }
 

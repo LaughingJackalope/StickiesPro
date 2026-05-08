@@ -24,7 +24,7 @@ struct StickiesProApp: App {
     var body: some Scene {
         // No main window - just like Stickies.app!
         Settings {
-            EmptyView()
+            StickiesSettingsView()
         }
         .modelContainer(Self.sharedModelContainer)
         .commands {
@@ -72,6 +72,17 @@ struct StickiesCommands: Commands {
                     windowManager.setColor(item.color)
                 }
                 .disabled(windowManager.keySticky == nil)
+            }
+        }
+        
+        CommandGroup(after: .sidebar) {
+            Menu("Notespace") {
+                ForEach(windowManager.notespaces) { notespace in
+                    Button(notespace.displayName) {
+                        windowManager.switchNotespace(to: notespace)
+                    }
+                    .disabled(windowManager.activeNotespaceID == notespace.id)
+                }
             }
         }
         
