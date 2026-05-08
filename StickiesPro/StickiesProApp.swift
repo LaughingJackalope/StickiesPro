@@ -41,6 +41,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSApplication.shared.setActivationPolicy(.regular)
         
         windowManager.configure(modelContext: StickiesProApp.sharedModelContainer.mainContext)
+        Task {
+            await AnalyticsStore.shared.prepare()
+        }
     }
     
     func applicationWillTerminate(_ notification: Notification) {
@@ -56,6 +59,13 @@ struct StickiesCommands: Commands {
     @ObservedObject private var windowManager = StickyWindowManager.shared
     
     var body: some Commands {
+        CommandGroup(replacing: .newItem) {
+            Button("New Sticky") {
+                windowManager.createSticky()
+            }
+            .keyboardShortcut("n", modifiers: .command)
+        }
+        
         CommandMenu("Color") {
             ForEach(StickyPalette.colors) { item in
                 Button(item.name) {
@@ -79,13 +89,13 @@ struct StickiesCommands: Commands {
     }
 }
 
-private struct StickyPaletteItem: Identifiable {
+struct StickyPaletteItem: Identifiable {
     let id: String
     let name: String
     let color: Color
 }
 
-private enum StickyPalette {
+enum StickyPalette {
     static let colors: [StickyPaletteItem] = [
         StickyPaletteItem(id: "yellow", name: "Yellow", color: .yellow),
         StickyPaletteItem(id: "blue", name: "Blue", color: .blue),
@@ -95,4 +105,8 @@ private enum StickyPalette {
         StickyPaletteItem(id: "orange", name: "Orange", color: .orange),
         StickyPaletteItem(id: "gray", name: "Gray", color: .gray)
     ]
+    
+    static func creationColor(at index: Int) -> Color {
+        colors[index % colors.count].color
+    }
 }

@@ -14,6 +14,7 @@ struct StickyNoteView: View {
     @Binding var content: String
     @Binding var color: Color
     let onClose: () -> Void
+    let onNewSticky: () -> Void
     
     @StateObject private var windowShadeController = WindowShadeController()
     @State private var isHovered = false
@@ -52,6 +53,7 @@ struct StickyNoteView: View {
                     onClose: {
                         showsDeleteConfirmation = true
                     },
+                    onNewSticky: onNewSticky,
                     onToggleEditing: {
                         isEditing.toggle()
                         isFocused = isEditing
@@ -139,6 +141,7 @@ private struct StickyTitleBar: View {
     let isEditing: Bool
     let isHovered: Bool
     let onClose: () -> Void
+    let onNewSticky: () -> Void
     let onToggleEditing: () -> Void
     @ObservedObject var windowShadeController: WindowShadeController
     
@@ -162,8 +165,8 @@ private struct StickyTitleBar: View {
                 Button {
                     windowShadeController.zoom()
                 } label: {
-                    Image(systemName: "plus")
-                        .font(.system(size: 9, weight: .bold))
+                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                        .font(.system(size: 8, weight: .bold))
                         .foregroundStyle(.primary.opacity(0.75))
                         .frame(width: 16, height: 16)
                         .background(Circle().fill(.white.opacity(0.35)))
@@ -180,6 +183,16 @@ private struct StickyTitleBar: View {
                 }
                 
                 Spacer()
+                
+                Button(action: onNewSticky) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.primary.opacity(0.75))
+                        .frame(width: 16, height: 16)
+                        .background(Circle().fill(.white.opacity(0.35)))
+                }
+                .buttonStyle(.plain)
+                .help("New Sticky")
                 
                 Button(action: onToggleEditing) {
                     Image(systemName: isEditing ? "eye.fill" : "pencil")
@@ -379,7 +392,8 @@ private final class TitleBarHostView: NSView {
     StickyNoteView(
         content: .constant("# Preview Note\n\nThis is a **preview** of the sticky note.\n\n- Item 1\n- Item 2\n\n*More pro than ever!*"),
         color: .constant(.yellow),
-        onClose: {}
+        onClose: {},
+        onNewSticky: {}
     )
     .frame(width: 280, height: 320)
 }

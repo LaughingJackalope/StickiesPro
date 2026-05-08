@@ -19,6 +19,7 @@ class StickyWindowManager: ObservableObject {
     
     private(set) var modelContext: ModelContext?
     private var saveTask: Task<Void, Never>?
+    private var pendingAnalyticsNoteIDs = Set<UUID>()
     
     private init() {}
     
@@ -30,13 +31,14 @@ class StickyWindowManager: ObservableObject {
     /// Create a new sticky note window
     func createSticky(
         content: String = "",
-        color: Color = .yellow,
+        color: Color? = nil,
         position: CGPoint? = nil
     ) {
-        let resolvedPosition = position ?? defaultStickyPosition()
+        let resolvedColor = color ?? StickyPalette.creationColor(at: stickies.count)
+        let resolvedPosition = position ?? nextStickyPosition()
         let stickyModel = Sticky(
             content: content,
-            color: StickyColorCodec.hex(from: color),
+            color: StickyColorCodec.hex(from: resolvedColor),
             positionX: resolvedPosition.x,
             positionY: resolvedPosition.y
         )
@@ -63,7 +65,11 @@ class StickyWindowManager: ObservableObject {
         keySticky?.setColor(color)
     }
     
-    func scheduleSave() {
+    func scheduleSave(contentChangedNoteID: UUID? = nil) {
+        if let contentChangedNoteID {
+            pendingAnalyticsNoteIDs.insert(contentChangedNoteID)
+        }
+        
         saveTask?.cancel()
         saveTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(2))
@@ -77,6 +83,7 @@ class StickyWindowManager: ObservableObject {
     func saveImmediately() {
         do {
             try modelContext?.save()
+            enqueuePendingAnalyticsNotes()
         } catch {
             assertionFailure("Failed to save stickies: \(error)")
         }
@@ -88,13 +95,28 @@ class StickyWindowManager: ObservableObject {
         saveImmediately()
     }
     
+    private func enqueuePendingAnalyticsNotes() {
+        let noteIDs = pendingAnalyticsNoteIDs
+        pendingAnalyticsNoteIDs.removeAll()
+        
+        for noteID in noteIDs {
+            Task {
+                await AnalyticsStore.shared.enqueueNoteForProcessing(noteID)
+            }
+        }
+    }
+    
     private func loadPersistedStickies() {
         guard let modelContext else { return }
         
         do {
             let descriptor = FetchDescriptor<Sticky>(sortBy: [SortDescriptor(\.createdAt)])
             let persistedStickies = try modelContext.fetch(descriptor)
-            persistedStickies.forEach(openWindow(for:))
+            if persistedStickies.isEmpty {
+                createWelcomeSticky()
+            } else {
+                persistedStickies.forEach(openWindow(for:))
+            }
         } catch {
             assertionFailure("Failed to load persisted stickies: \(error)")
         }
@@ -108,11 +130,29 @@ class StickyWindowManager: ObservableObject {
         sticky.show()
     }
     
-    private func defaultStickyPosition() -> CGPoint {
+    private func createWelcomeSticky() {
+        createSticky(
+            content: "# Welcome to StickiesPro\n\nUse Command-N to create a new sticky whenever you need one.",
+            color: StickyPalette.creationColor(at: 0)
+        )
+    }
+    
+    private func nextStickyPosition() -> CGPoint {
         let screenFrame = NSScreen.main?.visibleFrame ?? .zero
+        let basePosition: CGPoint
+        
+        if let lastSticky = stickies.last {
+            basePosition = CGPoint(x: lastSticky.position.x + 32, y: lastSticky.position.y - 32)
+        } else {
+            basePosition = CGPoint(
+                x: screenFrame.minX + 100,
+                y: screenFrame.maxY - 100
+            )
+        }
+        
         return CGPoint(
-            x: screenFrame.minX + 100,
-            y: screenFrame.maxY - 100
+            x: min(max(basePosition.x, screenFrame.minX + 20), screenFrame.maxX - 300),
+            y: min(max(basePosition.y, screenFrame.minY + 60), screenFrame.maxY - 60)
         )
     }
 }
@@ -133,7 +173,7 @@ class StickyWindow: NSObject, ObservableObject, Identifiable, NSWindowDelegate {
             model.modifiedAt = Date()
             updateWindowTitle()
             StickyWindowManager.shared.objectWillChange.send()
-            StickyWindowManager.shared.scheduleSave()
+            StickyWindowManager.shared.scheduleSave(contentChangedNoteID: id)
         }
     }
     
@@ -188,6 +228,9 @@ class StickyWindow: NSObject, ObservableObject, Identifiable, NSWindowDelegate {
             onClose: { [weak self] in
                 guard let self = self else { return }
                 StickyWindowManager.shared.removeSticky(self)
+            },
+            onNewSticky: {
+                StickyWindowManager.shared.createSticky()
             }
         )
         
